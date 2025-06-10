@@ -2,91 +2,130 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
-public class RoomDAO {
+public class AllocationDAO {
 
-    // Get all rooms
-    public static List<String> getRooms() {
-        List<String> rooms = new ArrayList<>();
-        String sql = "SELECT * FROM rooms";
+    // ✅ Allocate room to student
+    public static boolean allocateRoom(int studentId, int roomId) {
+        String insertAllocation = "INSERT INTO allocations (student_id, room_id) VALUES (?, ?)";
+        String updateRoomAvailability = "UPDATE rooms SET available = FALSE WHERE room_id = ? AND available = TRUE";
+
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            conn.setAutoCommit(false); // Start transaction
+
+            // 1. Mark room as unavailable (only if available)
+            try (PreparedStatement pstmtUpdate = conn.prepareStatement(updateRoomAvailability)) {
+                pstmtUpdate.setInt(1, roomId);
+                if (pstmtUpdate.executeUpdate() == 0) {
+                    conn.rollback();
+                    System.err.println("Allocation failed: Room not available or doesn't exist.");
+                    return false;
+                }
+            }
+
+            // 2. Add allocation
+            try (PreparedStatement pstmtInsert = conn.prepareStatement(insertAllocation)) {
+                pstmtInsert.setInt(1, studentId);
+                pstmtInsert.setInt(2, roomId);
+                if (pstmtInsert.executeUpdate() == 0) {
+                    conn.rollback();
+                    System.err.println("Allocation failed: Unable to insert allocation.");
+                    return false;
+                }
+            }
+
+            conn.commit(); // All successful
+            return true;
+
+        } catch (SQLException e) {
+            System.err.println("SQL Error during allocation: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ✅ Get all allocations
+    public static List<String> getAllocations() {
+        List<String> allocations = new ArrayList<>();
+        String sql = "SELECT a.allocation_id, s.name AS student_name, r.room_number " +
+                     "FROM allocations a " +
+                     "JOIN students s ON a.student_id = s.student_id " +
+                     "JOIN rooms r ON a.room_id = r.room_id";
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql);
              ResultSet rs = stmt.executeQuery()) {
 
             while (rs.next()) {
-                rooms.add(String.format("ID: %d, Room No: %s, Capacity: %d, Available: %s",
-                        rs.getInt("room_id"),
-                        rs.getString("room_number"),
-                        rs.getInt("capacity"),
-                        rs.getBoolean("available") ? "Yes" : "No"));
+                allocations.add(String.format("Allocation ID: %d, Student: %s, Room: %s",
+                        rs.getInt("allocation_id"),
+                        rs.getString("student_name"),
+                        rs.getString("room_number")));
             }
 
         } catch (SQLException e) {
-            System.err.println("Error retrieving rooms: " + e.getMessage());
+            System.err.println("Error fetching allocations: " + e.getMessage());
         }
 
-        return rooms;
+        return allocations;
     }
 
-    // Add a room
-    public static boolean addRoom(String roomNumber, int capacity, boolean available) {
-        String sql = "INSERT INTO rooms (room_number, capacity, available) VALUES (?, ?, ?)";
-
+    // ✅ (Optional) Check if student is already allocated
+    public static boolean isStudentAllocated(int studentId) {
+        String sql = "SELECT 1 FROM allocations WHERE student_id = ?";
         try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            pstmt.setString(1, roomNumber);
-            pstmt.setInt(2, capacity);
-            pstmt.setBoolean(3, available);
-
-            return pstmt.executeUpdate() > 0;
-
-        } catch (SQLException e) {
-            System.err.println("Error adding room: " + e.getMessage());
-            return false;
-        }
-    }
-
-    // ✅ Get room by ID (used before allocation)
-    public static String getRoomById(int roomId) {
-        String sql = "SELECT * FROM rooms WHERE room_id = ?";
-
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
-            pstmt.setInt(1, roomId);
-
-            try (ResultSet rs = pstmt.executeQuery()) {
-                if (rs.next()) {
-                    String roomNo = rs.getString("room_number");
-                    int capacity = rs.getInt("capacity");
-                    boolean available = rs.getBoolean("available");
-
-                    return "ID: " + roomId + ", Room No: " + roomNo + ", Capacity: " + capacity + ", Available: " + (available ? "Yes" : "No");
-                } else {
-                    return null;
-                }
-            }
-
-        } catch (SQLException e) {
-            System.err.println("Error retrieving room by ID: " + e.getMessage());
-            return null;
-        }
-    }
-
-    // ✅ Optional: Check if a room exists
-    public static boolean roomExists(int roomId) {
-        String sql = "SELECT 1 FROM rooms WHERE room_id = ?";
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
-            pstmt.setInt(1, roomId);
-            try (ResultSet rs = pstmt.executeQuery()) {
+            stmt.setInt(1, studentId);
+            try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next();
             }
 
         } catch (SQLException e) {
-            System.err.println("Error checking room existence: " + e.getMessage());
+            System.err.println("Error checking student allocation: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ✅ (Optional) Deallocate room (innovation/future use)
+    public static boolean deallocateRoom(int studentId) {
+        String getRoomIdSql = "SELECT room_id FROM allocations WHERE student_id = ?";
+        String deleteAllocationSql = "DELETE FROM allocations WHERE student_id = ?";
+        String updateRoomSql = "UPDATE rooms SET available = TRUE WHERE room_id = ?";
+
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            conn.setAutoCommit(false);
+
+            int roomId = -1;
+            try (PreparedStatement getStmt = conn.prepareStatement(getRoomIdSql)) {
+                getStmt.setInt(1, studentId);
+                ResultSet rs = getStmt.executeQuery();
+                if (rs.next()) {
+                    roomId = rs.getInt("room_id");
+                } else {
+                    conn.rollback();
+                    System.err.println("Deallocation failed: No allocation found for student.");
+                    return false;
+                }
+            }
+
+            try (PreparedStatement delStmt = conn.prepareStatement(deleteAllocationSql)) {
+                delStmt.setInt(1, studentId);
+                if (delStmt.executeUpdate() == 0) {
+                    conn.rollback();
+                    System.err.println("Deallocation failed: Could not delete allocation.");
+                    return false;
+                }
+            }
+
+            try (PreparedStatement updStmt = conn.prepareStatement(updateRoomSql)) {
+                updStmt.setInt(1, roomId);
+                updStmt.executeUpdate();
+            }
+
+            conn.commit();
+            return true;
+
+        } catch (SQLException e) {
+            System.err.println("Error during deallocation: " + e.getMessage());
             return false;
         }
     }
